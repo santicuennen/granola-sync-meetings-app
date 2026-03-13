@@ -93,6 +93,12 @@ export async function GET() {
   try {
     const meetings = await fetchMeetingsFromS3()
     
+    // Validar que meetings sea un array
+    if (!Array.isArray(meetings)) {
+      console.error('❌ fetchMeetingsFromS3 did not return an array:', typeof meetings)
+      throw new Error('Invalid data format from S3')
+    }
+    
     // Transformar formato de S3 al formato esperado por el front
     const formattedMeetings = meetings.map((meeting: any) => {
       // Extract summary - prioritize AI-generated summary over manual notes
