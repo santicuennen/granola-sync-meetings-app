@@ -1,18 +1,18 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 
 export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const router = useRouter()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError('')
+
+    console.log('Attempting login...')
 
     try {
       const res = await fetch('/api/auth', {
@@ -21,14 +21,22 @@ export default function LoginPage() {
         body: JSON.stringify({ password }),
       })
 
-      if (res.ok) {
-        router.push('/')
-        router.refresh()
+      console.log('Response status:', res.status)
+      const data = await res.json()
+      console.log('Response data:', data)
+
+      if (res.ok && data.success) {
+        console.log('Login successful, redirecting...')
+        // Force a hard redirect to ensure middleware re-evaluates
+        window.location.href = '/'
       } else {
-        setError('Invalid password')
+        const errorMsg = data.error || 'Invalid password'
+        console.error('Login failed:', errorMsg)
+        setError(errorMsg)
       }
     } catch (err) {
-      setError('Authentication failed')
+      console.error('Auth error:', err)
+      setError('Authentication failed. Check console for details.')
     } finally {
       setLoading(false)
     }
