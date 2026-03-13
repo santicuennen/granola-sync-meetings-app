@@ -11,6 +11,7 @@ interface Meeting {
   date: string
   attendees: string[]
   summary: string
+  summaryHtml?: string | null
   tags: string[]
 }
 
@@ -90,6 +91,11 @@ export default function MeetingsVault() {
                     <Calendar className="w-4 h-4" />
                     <span>{format(new Date(meeting.date), 'MMM d, yyyy')}</span>
                   </div>
+                  {meeting.summary && meeting.summary !== 'No summary available' && (
+                    <p className="text-xs text-gray-500 line-clamp-2 mb-2">
+                      {meeting.summary.split('\n').slice(0, 2).join(' · ')}
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-1">
                     {meeting.tags.slice(0, 3).map((tag) => (
                       <span
@@ -127,7 +133,11 @@ export default function MeetingsVault() {
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold text-gray-900 mb-3">Summary</h3>
                   <div className="prose prose-sm max-w-none text-gray-700">
-                    <ReactMarkdown>{selectedMeeting.summary}</ReactMarkdown>
+                    {selectedMeeting.summaryHtml ? (
+                      <div dangerouslySetInnerHTML={{ __html: selectedMeeting.summaryHtml }} />
+                    ) : (
+                      <ReactMarkdown>{selectedMeeting.summary}</ReactMarkdown>
+                    )}
                   </div>
                 </div>
 

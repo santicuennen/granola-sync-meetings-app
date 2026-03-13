@@ -14,7 +14,8 @@
     "date-fns": "^3.0.0",
     "lucide-react": "^0.294.0",
     "@vercel/postgres": "^0.5.0",
-    "react-markdown": "^9.0.0"
+    "react-markdown": "^9.0.0",
+    "@aws-sdk/client-s3": "^3.490.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
