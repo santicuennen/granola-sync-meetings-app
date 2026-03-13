@@ -37,11 +37,13 @@ export default function MeetingsVault() {
     }
   }
 
-  const filteredMeetings = meetings.filter(m =>
-    m.title.toLowerCase().includes(search.toLowerCase()) ||
-    m.summary.toLowerCase().includes(search.toLowerCase()) ||
-    m.attendees.some(a => a.toLowerCase().includes(search.toLowerCase()))
-  )
+  const filteredMeetings = meetings
+    .filter(m =>
+      m.title.toLowerCase().includes(search.toLowerCase()) ||
+      m.summary.toLowerCase().includes(search.toLowerCase()) ||
+      m.attendees.some(a => a.toLowerCase().includes(search.toLowerCase()))
+    )
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -70,7 +72,7 @@ export default function MeetingsVault() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Meetings List */}
-          <div className="lg:col-span-1 space-y-3">
+          <div className="lg:col-span-1 space-y-3 lg:max-h-[calc(100vh-12rem)] lg:overflow-y-auto">
             {loading ? (
               <div className="text-center py-8 text-gray-500">Loading meetings...</div>
             ) : filteredMeetings.length === 0 ? (
@@ -112,7 +114,7 @@ export default function MeetingsVault() {
           </div>
 
           {/* Meeting Detail */}
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto">
             {selectedMeeting ? (
               <div className="bg-white rounded-lg border border-gray-200 p-6">
                 <h2 className="text-2xl font-bold text-gray-900 mb-4">
