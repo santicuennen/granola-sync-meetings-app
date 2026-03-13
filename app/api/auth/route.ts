@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
 
 export async function POST(request: Request) {
   try {
@@ -7,6 +6,7 @@ export async function POST(request: Request) {
     
     // Check password against environment variable
     const correctPassword = process.env.AUTH_PASSWORD
+    const authSecret = process.env.AUTH_SECRET || 'authenticated'
     
     if (!correctPassword) {
       return NextResponse.json(
@@ -16,16 +16,19 @@ export async function POST(request: Request) {
     }
     
     if (password === correctPassword) {
+      // Create response with cookie
+      const response = NextResponse.json({ success: true })
+      
       // Set auth cookie
-      const cookieStore = await cookies()
-      cookieStore.set('meetings-auth', process.env.AUTH_SECRET || 'authenticated', {
+      response.cookies.set('meetings-auth', authSecret, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'lax',
         maxAge: 60 * 60 * 24 * 7, // 7 days
+        path: '/',
       })
       
-      return NextResponse.json({ success: true })
+      return response
     }
     
     return NextResponse.json(
@@ -33,6 +36,7 @@ export async function POST(request: Request) {
       { status: 401 }
     )
   } catch (error) {
+    console.error('Auth error:', error)
     return NextResponse.json(
       { error: 'Authentication failed' },
       { status: 500 }
