@@ -80,6 +80,9 @@ async function fetchMeetingsFromS3() {
   }
 }
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 export async function GET() {
   // En desarrollo sin S3 configurado, usar mock data
   if (process.env.NODE_ENV === 'development' && !process.env.AWS_ACCESS_KEY_ID) {
