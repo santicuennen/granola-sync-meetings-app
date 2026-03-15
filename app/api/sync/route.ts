@@ -148,8 +148,7 @@ function parseCache(cacheData: unknown): { meetings: RawMeeting[]; transcriptInd
 }
 
 function fixEncoding(str: string): string {
-  if (!str) return str
-  return Buffer.from(str, 'latin1').toString('utf8')
+  return str
 }
 
 function formatMeeting(
