@@ -11,28 +11,25 @@ const s3Client = new S3Client({
 
 async function fetchMeetingFromS3(meetingId: string) {
   const bucketName = process.env.GRANOLA_S3_BUCKET || 'grnl-meetings'
-  
-  try {
-    const command = new GetObjectCommand({
-      Bucket: bucketName,
-      Key: 'meetings.json',
-    })
-    
-    const response = await s3Client.send(command)
-    const bodyString = await response.Body?.transformToString()
-    
-    if (!bodyString) {
-      throw new Error('Empty response from S3')
-    }
-    
-    const data = JSON.parse(bodyString)
-    const meetings = data.meetings || []
-    
-    return meetings.find((m: any) => m.id === meetingId)
-  } catch (error) {
-    console.error('Error fetching from S3:', error)
-    throw error
+
+  // Leer el índice para saber en qué período está el meeting
+  const indexRes = await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: 'index.json' }))
+  const indexStr = await indexRes.Body?.transformToString()
+  if (!indexStr) throw new Error('Empty index')
+  const index = JSON.parse(indexStr)
+
+  // Buscar en cada período hasta encontrar el meeting
+  for (const period of index.periods) {
+    const periodRes = await s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: period.s3_key }))
+    const periodStr = await periodRes.Body?.transformToString()
+    if (!periodStr) continue
+    const data = JSON.parse(periodStr)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const found = (data.meetings || []).find((m: any) => m.id === meetingId)
+    if (found) return found
   }
+
+  return null
 }
 
 function formatTranscript(transcript: any[]): string {

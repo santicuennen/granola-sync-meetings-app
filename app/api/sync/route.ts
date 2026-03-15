@@ -288,8 +288,69 @@ async function fetchGranolaSummaries(
   return summaryIndex
 }
 
+// Merge meetings: para cada campo, quedarse con el que tenga MÁS información.
+// S3 es el archivo permanente — nunca degradar lo que ya está guardado.
+function mergeMeetings(
+  incoming: FormattedMeeting[],
+  existing: FormattedMeeting[]
+): FormattedMeeting[] {
+  const existingMap = new Map(existing.map((m) => [m.id, m]))
+  return incoming.map((newM) => {
+    const oldM = existingMap.get(newM.id)
+    if (!oldM) return newM
+
+    // Transcript: el que tenga más segmentos
+    const transcript =
+      (newM.transcript?.length ?? 0) >= (oldM.transcript?.length ?? 0)
+        ? newM.transcript
+        : oldM.transcript
+
+    // Summary: el que tenga más bullets (o cualquiera si el otro no tiene)
+    const newBullets = newM.summary?.bullets?.length ?? 0
+    const oldBullets = oldM.summary?.bullets?.length ?? 0
+    const summary = newBullets >= oldBullets ? (newM.summary ?? oldM.summary) : oldM.summary
+
+    // Notes: el que sea más largo
+    const notes_markdown =
+      (newM.notes_markdown?.length ?? 0) >= (oldM.notes_markdown?.length ?? 0)
+        ? newM.notes_markdown
+        : oldM.notes_markdown
+    const notes_plain =
+      (newM.notes_plain?.length ?? 0) >= (oldM.notes_plain?.length ?? 0)
+        ? newM.notes_plain
+        : oldM.notes_plain
+
+    return { ...newM, transcript, summary, notes_markdown, notes_plain }
+  })
+}
+
 async function uploadToS3(s3: S3Client, bucket: string, files: S3File[]): Promise<void> {
-  for (const file of files) {
+  for (let file of files) {
+    // Para archivos de período Y el legacy meetings.json, comparar antes de sobreescribir
+    if (file.key.match(/^\d{4}-\d{2}\/meetings\.json$/) || file.key === 'meetings.json') {
+      try {
+        const existing = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: file.key }))
+        const existingStr = await existing.Body?.transformToString()
+        if (existingStr) {
+          const existingData = JSON.parse(existingStr)
+          const existingMeetings: FormattedMeeting[] = existingData.meetings ?? []
+          const newData = JSON.parse(file.body)
+          const newMeetings: FormattedMeeting[] = newData.meetings ?? []
+
+          const existingTranscripts = existingMeetings.reduce((s, m) => s + (m.transcript?.length ?? 0), 0)
+          const newTranscripts = newMeetings.reduce((s, m) => s + (m.transcript?.length ?? 0), 0)
+
+          if (existingTranscripts > newTranscripts) {
+            console.log(`[uploadToS3] ${file.key}: merging — existing has ${existingTranscripts} transcript segs, new has ${newTranscripts}`)
+            const merged = mergeMeetings(newMeetings, existingMeetings)
+            file = { ...file, body: JSON.stringify({ ...newData, meetings: merged }) }
+          }
+        }
+      } catch {
+        // NoSuchKey o error de lectura → subir normalmente
+      }
+    }
+
     await s3.send(
       new PutObjectCommand({
         Bucket: bucket,
