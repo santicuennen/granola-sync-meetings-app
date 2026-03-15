@@ -20,6 +20,8 @@ export default function MeetingsVault() {
   const [search, setSearch] = useState('')
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null)
   const [loading, setLoading] = useState(true)
+  const [syncState, setSyncState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [syncMessage, setSyncMessage] = useState<string>('')
 
   useEffect(() => {
     fetchMeetings()
@@ -37,6 +39,27 @@ export default function MeetingsVault() {
     }
   }
 
+  const handleSync = async () => {
+    setSyncState('loading')
+    setSyncMessage('')
+    try {
+      const res = await fetch('/api/sync', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setSyncState('error')
+        setSyncMessage(data.error || 'Error al sincronizar')
+      } else {
+        setSyncState('success')
+        setSyncMessage(`✓ ${data.meetingsCount} meetings`)
+        fetchMeetings()
+        setTimeout(() => setSyncState('idle'), 3000)
+      }
+    } catch {
+      setSyncState('error')
+      setSyncMessage('Error de conexión')
+    }
+  }
+
   const filteredMeetings = meetings
     .filter(m =>
       m.title.toLowerCase().includes(search.toLowerCase()) ||
@@ -49,9 +72,35 @@ export default function MeetingsVault() {
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 py-4">
-          <h1 className="text-2xl font-bold text-gray-900">Meetings Vault</h1>
-          <p className="text-sm text-gray-600">Your Granola meetings, organized</p>
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Meetings Vault</h1>
+            <p className="text-sm text-gray-600">Your Granola meetings, organized</p>
+          </div>
+          <button
+            onClick={syncState === 'error' ? () => setSyncState('idle') : handleSync}
+            disabled={syncState === 'loading'}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              syncState === 'loading'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : syncState === 'success'
+                ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                : syncState === 'error'
+                ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                : 'bg-blue-600 text-white hover:bg-blue-700'
+            }`}
+          >
+            {syncState === 'loading' && (
+              <svg className="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            )}
+            {syncState === 'loading' && 'Sincronizando...'}
+            {syncState === 'idle' && 'Sync'}
+            {syncState === 'success' && syncMessage}
+            {syncState === 'error' && syncMessage}
+          </button>
         </div>
       </header>
 

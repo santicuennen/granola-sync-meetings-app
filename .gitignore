@@ -2,7 +2,7 @@
 node_modules/
 .pnp
 .pnp.js
-
+granola-sync-service/
 # Testing
 coverage/
 
