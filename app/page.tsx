@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Search, Calendar, User, Clock, Plus, FolderOpen, Check, X, Pencil, Trash2, Tag } from 'lucide-react'
+import { Search, Calendar, User, Plus, FolderOpen, Check, X, Pencil, Trash2, Tag } from 'lucide-react'
 import { format } from 'date-fns'
 import ReactMarkdown from 'react-markdown'
 
@@ -488,12 +488,18 @@ export default function MeetingsVault() {
                     ))}
                   </div>
 
-                  <div className="mt-6 pt-6 border-t border-gray-200">
+                  <div className="mt-6 pt-6 border-t border-gray-200 flex gap-3">
                     <button
                       onClick={() => window.open(`/api/meetings/${selectedMeeting.id}/transcript`, '_blank')}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                     >
                       Ver Transcripción
+                    </button>
+                    <button
+                      onClick={() => window.open(`/api/meetings/${selectedMeeting.id}/transcript?format=md`, '_blank')}
+                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                    >
+                      Descargar .md
                     </button>
                   </div>
                 </div>

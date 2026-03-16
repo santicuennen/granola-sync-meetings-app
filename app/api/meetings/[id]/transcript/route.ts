@@ -48,6 +48,29 @@ function formatTranscript(transcript: any[]): string {
   }).join('\n')
 }
 
+function formatTranscriptMarkdown(meeting: any): string {
+  const attendeeNames = meeting.attendees?.map((a: any) => a.name || a.email).join(', ') || 'N/A'
+  const date = new Date(meeting.date).toLocaleString()
+  const transcript = meeting.transcript || []
+
+  let md = `# ${meeting.title}\n\n`
+  md += `**Date:** ${date}  \n`
+  md += `**Attendees:** ${attendeeNames}\n\n`
+  md += `---\n\n`
+
+  if (!Array.isArray(transcript) || transcript.length === 0) {
+    md += '*No transcript available*\n'
+  } else {
+    for (const seg of transcript) {
+      const speaker = seg.speaker === 'me' ? '🎙 You' : '🔊 Them'
+      const time = new Date(seg.start).toLocaleTimeString()
+      md += `**${speaker}** *(${time})*  \n${seg.text}\n\n`
+    }
+  }
+
+  return md
+}
+
 export async function GET(
   request: Request,
   { params }: { params: { id: string } }
@@ -57,6 +80,19 @@ export async function GET(
 
     if (!meeting) {
       return NextResponse.json({ error: 'Meeting not found' }, { status: 404 })
+    }
+
+    // Markdown download
+    const url = new URL(request.url)
+    if (url.searchParams.get('format') === 'md') {
+      const md = formatTranscriptMarkdown(meeting)
+      const slug = meeting.title.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase()
+      return new Response(md, {
+        headers: {
+          'Content-Type': 'text/markdown; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${slug}-transcript.md"`,
+        },
+      })
     }
 
     const attendeeNames = meeting.attendees?.map((a: any) => a.name || a.email).join(', ') || 'N/A'
