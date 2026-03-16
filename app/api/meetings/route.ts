@@ -137,7 +137,11 @@ export async function GET() {
       }
     })
     
-    return NextResponse.json(formattedMeetings)
+    return NextResponse.json(formattedMeetings, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      },
+    })
   } catch (error) {
     console.error('Error fetching meetings:', error)
     
