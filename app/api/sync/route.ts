@@ -6,25 +6,27 @@ export const maxDuration = 60
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
+  // Si hay keys explicitas (p.ej. en Vercel) usarlas; si no, caer al
+  // default credential provider chain (perfil AWS local via AWS_PROFILE).
+  ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+    ? {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      }
+    : {}),
 })
 
 const BUCKET = process.env.GRANOLA_S3_BUCKET || 'grnl-meetings'
+const PAGE = 100
 
-interface TranscriptSegment {
-  document_id: string
-  start_timestamp: number
-  end_timestamp: number
-  source: 'microphone' | 'system'
-  text: string
-}
-
-interface RawMeeting {
+// --------------------------------------------------------------------------
+// Tipos
+// --------------------------------------------------------------------------
+interface RawDoc {
   id: string
-  title: string
+  title?: string
   created_at?: string
   updated_at?: string
   deleted_at?: string | null
@@ -38,9 +40,9 @@ interface RawMeeting {
     creator?: { name: string; email: string }
     attendees?: Array<{ name: string; email: string }>
   }
-  google_calendar_event?: {
-    start?: { dateTime?: string }
-  }
+  google_calendar_event?: { start?: { dateTime?: string } }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  last_viewed_panel?: any
 }
 
 interface FormattedMeeting {
@@ -58,20 +60,12 @@ interface FormattedMeeting {
   workspace_id?: string
 }
 
-type SummaryIndex = Record<string, { html: string | null; text: string; bullets: string[] }>
-
-type TranscriptIndex = Record<
-  string,
-  Array<{ start: number; end: number; speaker: 'me' | 'them'; text: string }>
->
-
 interface GranolaTokenFile {
   access_token: string
   refresh_token?: string
   client_id?: string
-  uploaded_at: string
-  // legacy: algunos archivos viejos tienen solo "token"
-  token?: string
+  uploaded_at?: string
+  token?: string // legacy
 }
 
 interface S3File {
@@ -79,118 +73,9 @@ interface S3File {
   body: string
 }
 
-function parseCache(cacheData: unknown): { meetings: RawMeeting[]; transcriptIndex: TranscriptIndex } {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = cacheData as any
-
-  // DEV LOGS: estructura del cache recibido
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('[parseCache] top-level keys:', data ? Object.keys(data) : 'null/undefined')
-    if (data?.cache) {
-      console.log('[parseCache] cache keys:', Object.keys(data.cache))
-      if (data.cache?.state) {
-        console.log('[parseCache] cache.state keys (first 10):', Object.keys(data.cache.state).slice(0, 10))
-        console.log('[parseCache] documents exists at cache.state.documents:', !!data.cache.state.documents)
-      }
-      if (data.cache?.cache?.state) {
-        console.log('[parseCache] ALSO found cache.cache.state (double-nested)')
-        console.log('[parseCache] documents exists at cache.cache.state.documents:', !!data.cache.cache.state.documents)
-      }
-    }
-  }
-
-  // Intentar ambos paths para compatibilidad
-  const docs = data?.cache?.state?.documents ?? data?.cache?.cache?.state?.documents
-  if (!docs) {
-    const msg = `Invalid cache format: documents not found. Top-level keys: ${data ? Object.keys(data).join(', ') : 'none'}`
-    console.error('[parseCache]', msg)
-    throw new Error(msg)
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const meetings: RawMeeting[] = (Object.values(docs as Record<string, unknown>) as any[]).filter(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (m: any) => {
-      if (!m?.id || !m?.title) return false
-      if (m.deleted_at) return false
-      if (m.was_trashed === true) return false
-      return true
-    }
-  )
-
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[parseCache] total docs: ${Object.keys(docs).length}, valid meetings: ${meetings.length}`)
-  }
-
-  const transcriptIndex: TranscriptIndex = {}
-  const rawTranscripts = data?.cache?.state?.transcripts ?? data?.cache?.cache?.state?.transcripts
-  if (rawTranscripts) {
-    for (const segments of Object.values(rawTranscripts as Record<string, unknown>)) {
-      if (!Array.isArray(segments)) continue
-      for (const seg of segments as TranscriptSegment[]) {
-        const docId = seg.document_id
-        if (!docId) continue
-        if (!transcriptIndex[docId]) transcriptIndex[docId] = []
-        transcriptIndex[docId].push({
-          start: seg.start_timestamp,
-          end: seg.end_timestamp,
-          speaker: seg.source === 'microphone' ? 'me' : 'them',
-          text: seg.text,
-        })
-      }
-    }
-    for (const docId of Object.keys(transcriptIndex)) {
-      transcriptIndex[docId].sort((a, b) => a.start - b.start)
-    }
-  }
-
-  return { meetings, transcriptIndex }
-}
-
-function fixEncoding(str: string): string {
-  return str
-}
-
-function formatMeeting(
-  raw: RawMeeting,
-  transcriptIndex: TranscriptIndex,
-  summaryIndex: SummaryIndex
-): FormattedMeeting {
-  const attendees: Array<{ name: string; email: string }> = []
-  if (raw.people?.creator) attendees.push(raw.people.creator)
-  if (raw.people?.attendees) attendees.push(...raw.people.attendees)
-
-  const date =
-    raw.created_at ||
-    raw.google_calendar_event?.start?.dateTime ||
-    new Date().toISOString()
-
-  return {
-    id: raw.id,
-    title: raw.title,
-    date,
-    updated_at: raw.updated_at,
-    status: raw.status,
-    attendees,
-    notes_markdown: raw.notes_markdown || '',
-    notes_plain: raw.notes_plain || '',
-    summary: summaryIndex[raw.id] ?? null,
-    transcript: transcriptIndex[raw.id] ?? [],
-    chapters: raw.chapters || [],
-    workspace_id: raw.workspace_id,
-  }
-}
-
-function partitionByPeriod(meetings: FormattedMeeting[]): Record<string, FormattedMeeting[]> {
-  const result: Record<string, FormattedMeeting[]> = {}
-  for (const meeting of meetings) {
-    const period = new Date(meeting.date).toISOString().slice(0, 7)
-    if (!result[period]) result[period] = []
-    result[period].push(meeting)
-  }
-  return result
-}
-
+// --------------------------------------------------------------------------
+// Token: refresh server-side (WorkOS)
+// --------------------------------------------------------------------------
 async function refreshGranolaToken(
   refreshToken: string,
   clientId: string
@@ -204,18 +89,27 @@ async function refreshGranolaToken(
       client_id: clientId,
     }),
   })
-
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new Error(`Token refresh failed ${res.status}: ${body.slice(0, 200)}`)
   }
-
   const data = await res.json()
   if (!data.access_token) throw new Error('Refresh response missing access_token')
-  return { access_token: data.access_token, refresh_token: data.refresh_token }
+  return { access_token: data.access_token, refresh_token: data.refresh_token ?? refreshToken }
 }
 
-async function callGranolaAPI(token: string): Promise<Response> {
+// Deriva client_id del JWT si no vino en el token file (claim "client_id").
+function clientIdFromJwt(accessToken: string): string | null {
+  try {
+    const payload = accessToken.split('.')[1]
+    const json = JSON.parse(Buffer.from(payload, 'base64').toString('utf-8'))
+    return json.client_id || null
+  } catch {
+    return null
+  }
+}
+
+async function callGetDocuments(token: string, offset: number): Promise<Response> {
   return fetch('https://api.granola.ai/v2/get-documents', {
     method: 'POST',
     headers: {
@@ -224,93 +118,143 @@ async function callGranolaAPI(token: string): Promise<Response> {
       'User-Agent': 'Granola/5.354.0',
       'X-Client-Version': '5.354.0',
     },
-    body: JSON.stringify({ limit: 100, offset: 0, include_last_viewed_panel: true }),
+    body: JSON.stringify({ limit: PAGE, offset, include_last_viewed_panel: true }),
   })
 }
 
-async function fetchGranolaSummaries(
-  tokenFile: GranolaTokenFile,
-  s3: S3Client,
-  bucket: string
-): Promise<SummaryIndex> {
-  // Soporte legacy: archivos viejos tienen solo "token"
+// Trae TODOS los documentos (paginado). Si el access_token expiro (401),
+// refresca con refresh_token + client_id, persiste el nuevo token en S3 y
+// reintenta. Devuelve los docs crudos.
+async function fetchAllDocuments(tokenFile: GranolaTokenFile): Promise<RawDoc[]> {
   let accessToken = tokenFile.access_token ?? tokenFile.token ?? ''
+  let refreshed = false
 
-  let response = await callGranolaAPI(accessToken)
-
-  // Si el token expiró y tenemos refresh_token, renovar automáticamente
-  if (response.status === 401 && tokenFile.refresh_token && tokenFile.client_id) {
-    console.log('[fetchGranolaSummaries] access_token expirado, renovando con refresh_token...')
-    const newTokens = await refreshGranolaToken(tokenFile.refresh_token, tokenFile.client_id)
-
-    // Persistir access_token Y refresh_token nuevos en S3 (rotation de un solo uso)
-    const updatedTokenFile: GranolaTokenFile = {
-      ...tokenFile,
-      access_token: newTokens.access_token,
-      refresh_token: newTokens.refresh_token,
+  const ensureFresh = async (resp: Response): Promise<Response> => {
+    if (resp.status !== 401 || refreshed) return resp
+    const clientId = tokenFile.client_id || clientIdFromJwt(accessToken)
+    if (!tokenFile.refresh_token || !clientId) return resp
+    console.log('[sync] access_token 401 -> refrescando (WorkOS)...')
+    const nt = await refreshGranolaToken(tokenFile.refresh_token, clientId)
+    accessToken = nt.access_token
+    refreshed = true
+    // Persistir token rotado en S3 (rotation de un solo uso)
+    const updated: GranolaTokenFile = {
+      access_token: nt.access_token,
+      refresh_token: nt.refresh_token,
+      client_id: clientId,
       uploaded_at: new Date().toISOString(),
     }
-    await s3.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: 'cache-backups/granola-token.json',
-      Body: JSON.stringify(updatedTokenFile),
-      ContentType: 'application/json',
-    }))
-    console.log('[fetchGranolaSummaries] tokens renovados y guardados en S3')
-
-    response = await callGranolaAPI(newTokens.access_token)
-  }
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => '')
-    console.error(`[fetchGranolaSummaries] API error ${response.status}: ${body.slice(0, 300)}`)
-    throw new Error(`Granola API responded with ${response.status}: ${response.statusText}`)
-  }
-
-  const data = await response.json()
-  const summaryIndex: SummaryIndex = {}
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const doc of data?.docs ?? []) {
-    const panel = doc?.last_viewed_panel
-    if (panel?.title !== 'Summary') continue
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bullets: string[] = (panel.generated_lines || []).map((l: any) =>
-      fixEncoding(l.text || '')
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: 'cache-backups/granola-token.json',
+        Body: JSON.stringify(updated),
+        ContentType: 'application/json',
+      })
     )
-    summaryIndex[doc.id] = {
-      html: panel.original_content ? fixEncoding(panel.original_content) : null,
-      bullets,
-      text: bullets.join('\n'),
-    }
+    console.log('[sync] token refrescado y guardado en S3')
+    return callGetDocuments(accessToken, 0)
   }
 
-  return summaryIndex
+  const docs: RawDoc[] = []
+  let offset = 0
+  // primera pagina (con posible refresh)
+  let resp = await ensureFresh(await callGetDocuments(accessToken, 0))
+  while (true) {
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(`get-documents ${resp.status}: ${body.slice(0, 200)}`)
+    }
+    const data = await resp.json()
+    const page: RawDoc[] = data?.docs ?? data?.documents ?? []
+    if (page.length === 0) break
+    docs.push(...page)
+    if (page.length < PAGE) break
+    offset += PAGE
+    resp = await callGetDocuments(accessToken, offset)
+  }
+  return docs
 }
 
-// Merge meetings: para cada campo, quedarse con el que tenga MÁS información.
-// S3 es el archivo permanente — nunca degradar lo que ya está guardado.
+// --------------------------------------------------------------------------
+// Formateo
+// --------------------------------------------------------------------------
+// Granola usa varios nombres de template para el panel de resumen
+// ("Summary", "Summary Rewrite", "Enhanced", custom...). No se filtra por
+// titulo: se acepta cualquier panel con contenido AI.
+function summaryFromPanel(doc: RawDoc) {
+  const panel = doc.last_viewed_panel
+  if (!panel) return null
+  const html: string | null = panel.original_content || panel.content || null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bullets: string[] = (panel.generated_lines || []).map((l: any) => l.text || '')
+  if (!html && bullets.length === 0) return null
+  return { html, bullets, text: bullets.join('\n') }
+}
+
+function formatMeeting(doc: RawDoc): FormattedMeeting {
+  const attendees: Array<{ name: string; email: string }> = []
+  if (doc.people?.creator) attendees.push(doc.people.creator)
+  if (doc.people?.attendees) attendees.push(...doc.people.attendees)
+  const date =
+    doc.created_at ||
+    doc.google_calendar_event?.start?.dateTime ||
+    new Date().toISOString()
+  return {
+    id: doc.id,
+    title: doc.title || '(sin titulo)',
+    date,
+    updated_at: doc.updated_at,
+    status: doc.status,
+    attendees,
+    notes_markdown: doc.notes_markdown || '',
+    notes_plain: doc.notes_plain || '',
+    summary: summaryFromPanel(doc),
+    transcript: [], // la API no trae transcript; se preserva el de S3 via merge
+    chapters: doc.chapters || [],
+    workspace_id: doc.workspace_id,
+  }
+}
+
+function validDoc(doc: RawDoc): boolean {
+  if (!doc?.id || !doc?.title) return false
+  if (doc.deleted_at) return false
+  if (doc.was_trashed === true) return false
+  return true
+}
+
+function partitionByPeriod(meetings: FormattedMeeting[]): Record<string, FormattedMeeting[]> {
+  const result: Record<string, FormattedMeeting[]> = {}
+  for (const m of meetings) {
+    const period = new Date(m.date).toISOString().slice(0, 7)
+    ;(result[period] ||= []).push(m)
+  }
+  return result
+}
+
+// --------------------------------------------------------------------------
+// Merge no destructivo (S3 nunca degrada lo guardado)
+// --------------------------------------------------------------------------
 function mergeMeetings(
   incoming: FormattedMeeting[],
   existing: FormattedMeeting[]
 ): FormattedMeeting[] {
-  const existingMap = new Map(existing.map((m) => [m.id, m]))
-  return incoming.map((newM) => {
-    const oldM = existingMap.get(newM.id)
-    if (!oldM) return newM
-
-    // Transcript: el que tenga más segmentos
+  const byId = new Map(existing.map((m) => [m.id, m]))
+  // union: arrancar con lo existente, luego aplicar lo entrante
+  const out = new Map(existing.map((m) => [m.id, m]))
+  for (const newM of incoming) {
+    const oldM = byId.get(newM.id)
+    if (!oldM) {
+      out.set(newM.id, newM)
+      continue
+    }
     const transcript =
       (newM.transcript?.length ?? 0) >= (oldM.transcript?.length ?? 0)
         ? newM.transcript
         : oldM.transcript
-
-    // Summary: el que tenga más bullets (o cualquiera si el otro no tiene)
     const newBullets = newM.summary?.bullets?.length ?? 0
     const oldBullets = oldM.summary?.bullets?.length ?? 0
     const summary = newBullets >= oldBullets ? (newM.summary ?? oldM.summary) : oldM.summary
-
-    // Notes: el que sea más largo
     const notes_markdown =
       (newM.notes_markdown?.length ?? 0) >= (oldM.notes_markdown?.length ?? 0)
         ? newM.notes_markdown
@@ -319,46 +263,19 @@ function mergeMeetings(
       (newM.notes_plain?.length ?? 0) >= (oldM.notes_plain?.length ?? 0)
         ? newM.notes_plain
         : oldM.notes_plain
-
-    return { ...newM, transcript, summary, notes_markdown, notes_plain }
-  })
+    out.set(newM.id, { ...newM, transcript, summary, notes_markdown, notes_plain })
+  }
+  return Array.from(out.values())
 }
 
-async function uploadToS3(s3: S3Client, bucket: string, files: S3File[]): Promise<void> {
-  for (let file of files) {
-    // Para archivos de período Y el legacy meetings.json, comparar antes de sobreescribir
-    if (file.key.match(/^\d{4}-\d{2}\/meetings\.json$/) || file.key === 'meetings.json') {
-      try {
-        const existing = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: file.key }))
-        const existingStr = await existing.Body?.transformToString()
-        if (existingStr) {
-          const existingData = JSON.parse(existingStr)
-          const existingMeetings: FormattedMeeting[] = existingData.meetings ?? []
-          const newData = JSON.parse(file.body)
-          const newMeetings: FormattedMeeting[] = newData.meetings ?? []
-
-          const existingTranscripts = existingMeetings.reduce((s, m) => s + (m.transcript?.length ?? 0), 0)
-          const newTranscripts = newMeetings.reduce((s, m) => s + (m.transcript?.length ?? 0), 0)
-
-          if (existingTranscripts > newTranscripts) {
-            console.log(`[uploadToS3] ${file.key}: merging — existing has ${existingTranscripts} transcript segs, new has ${newTranscripts}`)
-            const merged = mergeMeetings(newMeetings, existingMeetings)
-            file = { ...file, body: JSON.stringify({ ...newData, meetings: merged }) }
-          }
-        }
-      } catch {
-        // NoSuchKey o error de lectura → subir normalmente
-      }
-    }
-
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: file.key,
-        Body: file.body,
-        ContentType: 'application/json',
-      })
-    )
+async function s3GetMeetings(key: string): Promise<FormattedMeeting[]> {
+  try {
+    const r = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+    const str = await r.Body?.transformToString()
+    if (!str) return []
+    return JSON.parse(str).meetings ?? []
+  } catch {
+    return []
   }
 }
 
@@ -366,7 +283,6 @@ function buildS3Files(meetings: FormattedMeeting[]): S3File[] {
   const partitioned = partitionByPeriod(meetings)
   const now = new Date().toISOString()
   const files: S3File[] = []
-
   const periodMeta: Array<{
     period: string
     count: number
@@ -376,24 +292,19 @@ function buildS3Files(meetings: FormattedMeeting[]): S3File[] {
     last_meeting: string
   }> = []
 
-  for (const [period, periodMeetings] of Object.entries(partitioned)) {
-    const key = `${period}/meetings.json`
+  for (const [period, pm] of Object.entries(partitioned)) {
+    const sorted = [...pm].sort((a, b) => (a.date < b.date ? -1 : 1))
     files.push({
-      key,
-      body: JSON.stringify({
-        period,
-        exported_at: now,
-        count: periodMeetings.length,
-        meetings: periodMeetings,
-      }),
+      key: `${period}/meetings.json`,
+      body: JSON.stringify({ period, exported_at: now, count: pm.length, meetings: pm }),
     })
     periodMeta.push({
       period,
-      count: periodMeetings.length,
+      count: pm.length,
       file: `meetings-${period}.json`,
-      s3_key: key,
-      first_meeting: periodMeetings[0].date,
-      last_meeting: periodMeetings[periodMeetings.length - 1].date,
+      s3_key: `${period}/meetings.json`,
+      first_meeting: sorted[0].date,
+      last_meeting: sorted[sorted.length - 1].date,
     })
   }
 
@@ -406,21 +317,31 @@ function buildS3Files(meetings: FormattedMeeting[]): S3File[] {
       periods: periodMeta,
     }),
   })
-
   files.push({
     key: 'meetings.json',
-    body: JSON.stringify({
-      exported_at: now,
-      version: '1.0',
-      count: meetings.length,
-      meetings,
-    }),
+    body: JSON.stringify({ exported_at: now, version: '1.0', count: meetings.length, meetings }),
   })
-
   return files
 }
 
+async function uploadToS3(files: S3File[]): Promise<void> {
+  for (const file of files) {
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: file.key,
+        Body: file.body,
+        ContentType: 'application/json',
+      })
+    )
+  }
+}
+
+// --------------------------------------------------------------------------
+// Handler
+// --------------------------------------------------------------------------
 export async function POST(request: Request) {
+  // Auth
   const cookieHeader = request.headers.get('cookie') || ''
   const authCookie = cookieHeader
     .split(';')
@@ -429,87 +350,95 @@ export async function POST(request: Request) {
     ?.split('=')
     .slice(1)
     .join('=')
-
   const authSecret = process.env.AUTH_SECRET || 'authenticated'
   if (!authCookie || authCookie !== authSecret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  let cacheData: unknown
-  try {
-    const cacheRes = await s3Client.send(
-      new GetObjectCommand({ Bucket: BUCKET, Key: 'cache-backups/latest.json' })
-    )
-    const cacheStr = await cacheRes.Body?.transformToString()
-    if (!cacheStr) throw new Error('Empty cache body')
-    cacheData = JSON.parse(cacheStr)
-  } catch (err: unknown) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const e = err as any
-    if (e?.name === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404) {
-      return NextResponse.json({ error: 'Cache backup not found in S3' }, { status: 404 })
-    }
-    return NextResponse.json({ error: 'Cache backup not found in S3' }, { status: 404 })
-  }
-
-  let meetings: RawMeeting[]
-  let transcriptIndex: TranscriptIndex
-  try {
-    ;({ meetings, transcriptIndex } = parseCache(cacheData))
-  } catch (err: unknown) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return NextResponse.json(
-      { error: 'Invalid cache format', details: (err as any)?.message },
-      { status: 400 }
-    )
-  }
-
+  // 1. Token desde S3
   let tokenFile: GranolaTokenFile
   try {
-    const tokenRes = await s3Client.send(
+    const r = await s3Client.send(
       new GetObjectCommand({ Bucket: BUCKET, Key: 'cache-backups/granola-token.json' })
     )
-    const tokenStr = await tokenRes.Body?.transformToString()
-    if (!tokenStr) throw new Error('Empty token body')
-    tokenFile = JSON.parse(tokenStr)
-    // Soporte legacy: normalizar campo "token" → "access_token"
-    if (!tokenFile.access_token && tokenFile.token) {
-      tokenFile.access_token = tokenFile.token
-    }
+    const str = await r.Body?.transformToString()
+    if (!str) throw new Error('Empty token body')
+    tokenFile = JSON.parse(str)
+    if (!tokenFile.access_token && tokenFile.token) tokenFile.access_token = tokenFile.token
     if (!tokenFile.access_token) throw new Error('No access_token in token file')
   } catch {
-    return NextResponse.json({ error: 'Granola token not found in S3' }, { status: 500 })
-  }
-
-  let summaryIndex: SummaryIndex
-  try {
-    summaryIndex = await fetchGranolaSummaries(tokenFile, s3Client, BUCKET)
-  } catch (err: unknown) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const details = (err as any)?.message
-    console.error('[sync] Granola API failed:', details)
     return NextResponse.json(
-      { error: 'Granola API request failed', details },
-      { status: 502 }
-    )
-  }
-
-  const formattedMeetings = meetings.map((m) => formatMeeting(m, transcriptIndex, summaryIndex))
-  const s3Files = buildS3Files(formattedMeetings)
-  const periodsUpdated = s3Files.filter((f) => f.key.endsWith('/meetings.json')).length
-
-  try {
-    await uploadToS3(s3Client, BUCKET, s3Files)
-  } catch (err: unknown) {
-    return NextResponse.json(
-      { error: 'S3 upload failed', details: (err as any)?.message },
+      { error: 'Granola token not found in S3. Corre el sync local al menos una vez.' },
       { status: 500 }
     )
   }
 
+  // 2. Traer meetings de la API (con refresh server-side)
+  let docs: RawDoc[]
+  try {
+    docs = await fetchAllDocuments(tokenFile)
+  } catch (err: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const details = (err as any)?.message
+    console.error('[sync] Granola API failed:', details)
+    return NextResponse.json({ error: 'Granola API request failed', details }, { status: 502 })
+  }
+
+  const incoming = docs.filter(validDoc).map(formatMeeting)
+
+  // 3. Merge no destructivo contra lo que ya hay en S3, por periodo
+  const incomingByPeriod = partitionByPeriod(incoming)
+  const mergedAll: FormattedMeeting[] = []
+  for (const [period, pm] of Object.entries(incomingByPeriod)) {
+    const existing = await s3GetMeetings(`${period}/meetings.json`)
+    mergedAll.push(...mergeMeetings(pm, existing))
+  }
+  // periodos que existen en S3 pero no vinieron en esta corrida: preservarlos
+  // (no hace falta reescribirlos; quedan intactos. El index se regenera solo con
+  //  los periodos que tenemos; para no perder periodos viejos del index, los
+  //  reincorporamos leyendo el index previo.)
+  try {
+    const idxR = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: 'index.json' }))
+    const idxStr = await idxR.Body?.transformToString()
+    if (idxStr) {
+      const prevIdx = JSON.parse(idxStr)
+      const touched = new Set(Object.keys(incomingByPeriod))
+      for (const p of prevIdx.periods ?? []) {
+        if (!touched.has(p.period)) {
+          const old = await s3GetMeetings(p.s3_key)
+          mergedAll.push(...old)
+        }
+      }
+    }
+  } catch {
+    // sin index previo: seguimos solo con lo entrante
+  }
+
+  // 4. Backup del index + subir todo
+  try {
+    const curIdx = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: 'index.json' }))
+      .then((r) => r.Body?.transformToString())
+      .catch(() => null)
+    if (curIdx) {
+      const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '')
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: BUCKET,
+          Key: `backups/index-${ts}.json`,
+          Body: curIdx,
+          ContentType: 'application/json',
+        })
+      )
+    }
+    await uploadToS3(buildS3Files(mergedAll))
+  } catch (err: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return NextResponse.json({ error: 'S3 upload failed', details: (err as any)?.message }, { status: 500 })
+  }
+
   return NextResponse.json({
     success: true,
-    meetingsCount: formattedMeetings.length,
-    periodsUpdated,
+    meetingsCount: mergedAll.length,
+    fetched: incoming.length,
   })
 }

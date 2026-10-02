@@ -5,10 +5,16 @@ export const dynamic = 'force-dynamic'
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
+  // Si hay keys explicitas (p.ej. en Vercel) usarlas; si no, caer al
+  // default credential provider chain (perfil AWS local via AWS_PROFILE).
+  ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+    ? {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      }
+    : {}),
 })
 
 const BUCKET = process.env.GRANOLA_S3_BUCKET || 'grnl-meetings'

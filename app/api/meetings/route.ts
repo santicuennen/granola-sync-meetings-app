@@ -5,10 +5,16 @@ import { mockMeetings } from './route.mock'
 // Cliente S3 configurado con credenciales de Vercel
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
+  // Si hay keys explicitas (p.ej. en Vercel) usarlas; si no, caer al
+  // default credential provider chain (perfil AWS local via AWS_PROFILE).
+  ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+    ? {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      }
+    : {}),
 })
 
 async function fetchMeetingsFromS3() {
